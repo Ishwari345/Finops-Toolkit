@@ -198,16 +198,6 @@ in your browser.
 
 ---
 
-## 📷 Screenshots
-
-> Add screenshots after deployment.
-
-- Dashboard
-- Prophet Forecast
-- Root Cause Analysis
-- Security Alerts
-
----
 
 ## 🎯 Project Objectives
 
