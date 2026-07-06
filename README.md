@@ -6,7 +6,6 @@
 ![FastAPI](https://img.shields.io/badge/FastAPI-Backend-green)
 ![Prophet](https://img.shields.io/badge/ML-Facebook%20Prophet-orange)
 ![Chart.js](https://img.shields.io/badge/Chart.js-Visualization-red)
-![License](https://img.shields.io/badge/License-MIT-purple)
 
 ---
 
