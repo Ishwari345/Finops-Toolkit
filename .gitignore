@@ -1,0 +1,21 @@
+# Python
+ml-service-python/venv/
+__pycache__/
+*.pyc
+
+# Java
+**/target/
+*.class
+
+# VS Code
+.vscode/
+
+# Logs
+*.log
+
+# Environment
+.env
+
+# OS
+Thumbs.db
+.DS_Store

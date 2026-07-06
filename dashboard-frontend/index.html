@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>FinOps Toolkit — Cost Anomaly Dashboard</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+  <style>
+    body { font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin:0; padding:0; background:#020617; color:#e5e7eb; }
+    header { padding:16px 24px; background:#020617; border-bottom:1px solid #1f2937; display:flex; justify-content:space-between; align-items:center; }
+    header h1 { margin:0; font-size:20px; }
+    main { padding:20px 24px 40px; max-width:1200px; margin:0 auto; }
+    .controls { display:flex; gap:18px; align-items:center; padding:12px 16px; background:#020617; border-radius:12px; border:1px solid #1f2937; margin-bottom:18px; flex-wrap:wrap; }
+    label { font-size:13px; color:#9ca3af; }
+    input[type="range"] { width:170px; }
+    select { padding:5px 8px; border-radius:8px; background:#111827; color:#e5e7eb; border:1px solid #374151; }
+    .btn { background:#22c55e; color:#022c22; padding:8px 14px; border-radius:999px; font-size:13px; border:none; cursor:pointer; font-weight:500; }
+    .btn.secondary { background:#38bdf8; color:#0f172a; }
+    .btn:disabled { opacity:0.5; cursor:not-allowed; }
+    .btn:hover:not(:disabled) { transform:scale(1.03); }
+    #status { font-size:12px; color:#9ca3af; }
+    .grid { display:grid; grid-template-columns:2fr 1fr; gap:18px; }
+    .card { background:#020617; border-radius:12px; border:1px solid #1f2937; padding:14px 16px; }
+    .card h2 { margin:0 0 6px; font-size:16px; }
+    .card small { color:#6b7280; font-size:11px; }
+    canvas { max-width:100%; height:260px; }
+    #alert-banner { margin-top:8px; padding:8px 10px; border-radius:8px; font-size:12px; display:none; }
+    #alert-banner.critical { background:#7f1d1d; border:1px solid #b91c1c; color:#fecaca; }
+    #alert-banner.ok { background:#064e3b; border:1px solid #16a34a; color:#bbf7d0; }
+    #rca-content p { margin:4px 0; font-size:13px; }
+    hr { border:none; border-top:1px solid #1f2937; margin:10px 0; }
+    @media (max-width:900px) { .grid { grid-template-columns:1fr; } }
+  </style>
+</head>
+
+<body>
+<header>
+  <h1>💰 FinOps Toolkit — Cost Anomaly Dashboard</h1>
+  <span id="status">Waiting…</span>
+</header>
+
+<main>
+  <div class="controls">
+    <div>
+      <label for="sensitivity">Sensitivity (<span id="sens-label">2.0</span>σ)</label><br/>
+      <input type="range" id="sensitivity" min="1" max="4" step="0.5" value="2" />
+    </div>
+
+    <div>
+      <label for="role-select">Role</label><br/>
+      <select id="role-select">
+        <option value="viewer">Viewer</option>
+        <option value="admin" selected>Admin</option>
+      </select>
+    </div>
+
+    <button class="btn" id="runBtn">Run Detection</button>
+    <button class="btn secondary" id="downloadBtn">Download CSV</button>
+
+    <div id="alert-banner"></div>
+  </div>
+
+  <div class="grid">
+    <div class="card">
+      <h2>📈 Daily Cloud Cost & Anomalies</h2>
+      <small>Red / orange points are anomalies. Click to view RCA.</small>
+      <canvas id="costChart"></canvas>
+    </div>
+
+    <div class="card">
+      <h2>🔍 RCA — Root Cause Analysis</h2>
+      <div id="rca-content"><p>No anomaly selected.</p></div>
+    </div>
+  </div>
+
+  <div class="grid" style="margin-top:16px;">
+    <div class="card">
+      <h2>💹 Unit Cost Trend</h2>
+      <small>Cost per unit over time</small>
+      <canvas id="unitCostChart"></canvas>
+    </div>
+
+    <div class="card">
+      <h2>📊 Summary & Project Info</h2>
+      <div id="summary-content"><p>Click “Run Detection” to see summary.</p></div>
+      <hr/>
+      <small>
+        <strong>Project:</strong> FinOps Toolkit for Intelligent Cloud Cost Anomaly Detection<br/>
+        <strong>Team:</strong> Ishwari Bagewadi,Hitha M,Faiza V K <br/>
+        <strong>Guide:</strong> Dr. Girish Kumar B C<br/>
+        <strong>College:</strong> RV Institute of Technology and Management
+      </small>
+    </div>
+  </div>
+</main>
+
+<script>
+const API = "http://127.0.0.1:8000";
+
+let costChart = null;
+let unitCostChart = null;
+let role = "admin";
+let lastDetection = null;
+
+const sens = document.getElementById("sensitivity");
+const sensLabel = document.getElementById("sens-label");
+const roleSelect = document.getElementById("role-select");
+const statusTxt = document.getElementById("status");
+const alertBox = document.getElementById("alert-banner");
+const rcaBox = document.getElementById("rca-content");
+const summaryBox = document.getElementById("summary-content");
+const runBtn = document.getElementById("runBtn");
+const downloadBtn = document.getElementById("downloadBtn");
+
+sens.oninput = () => { sensLabel.textContent = sens.value; };
+roleSelect.onchange = () => { role = roleSelect.value; applyRole(); };
+runBtn.onclick = () => runDetection();
+downloadBtn.onclick = () => downloadCSV();
+
+function applyRole() {
+  const isViewer = role === "viewer";
+  sens.disabled = isViewer;
+  runBtn.disabled = isViewer;
+  statusTxt.textContent = isViewer ? "Viewer Mode (read-only)" : "Admin Mode";
+}
+
+applyRole();  // initial state (no auto run)
+
+async function runDetection() {
+  try {
+    statusTxt.textContent = "Detecting…";
+    alertBox.style.display = "none";
+    rcaBox.innerHTML = "<p>Select anomaly for RCA.</p>";
+    summaryBox.innerHTML = "<p>Loading…</p>";
+
+    const res = await fetch(API + "/detect-anomalies", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sensitivity: parseFloat(sens.value) })
+    });
+    if (!res.ok) throw new Error("detect-anomalies failed");
+    const data = await res.json();
+    lastDetection = data;
+
+    const unitRes = await fetch(API + "/unit-cost");
+    if (!unitRes.ok) throw new Error("unit-cost failed");
+    const unitData = await unitRes.json();
+
+    drawCostChart(data);
+    drawUnitCost(unitData);
+    renderSummary(data);
+    renderBanner(data);
+
+    statusTxt.textContent = "Ready";
+  } catch (err) {
+    console.error(err);
+    alert("❌ API not running — start with:\nuvicorn ml_service:app --reload --port 8000");
+    statusTxt.textContent = "Error";
+  }
+}
+
+function drawCostChart(data) {
+  const pts = data.anomalies || [];
+  const labels = pts.map(p => p.date);
+  const costs = pts.map(p => p.total_cost);
+  const expected = pts.map(p => p.expected_cost);
+
+  const ctx = document.getElementById("costChart").getContext("2d");
+  if (costChart) costChart.destroy();
+
+  costChart = new Chart(ctx, {
+    type: "line",
+    data: {
+      labels,
+      datasets: [
+        {
+          label: "Actual Cost",
+          data: costs,
+          borderColor: "#38bdf8",
+          pointBackgroundColor: pts.map(p => {
+            if (!p.is_anomaly) return "#38bdf8";
+            if (p.severity === "HIGH") return "#ef4444";
+            if (p.severity === "MEDIUM") return "#f97316";
+            return "#eab308";
+          }),
+          borderWidth: 2,
+          pointRadius: 4,
+          tension: 0
+        },
+        {
+          label: "Expected Cost (Prophet)",
+          data: expected,
+          borderColor: "#64748b",
+          borderDash: [4,4],
+          borderWidth: 1.3,
+          pointRadius: 0,
+          tension: 0
+        }
+      ]
+    },
+    options: {
+      animation: false,
+      onClick: (evt, elements) => {
+        if (!elements.length) return;
+        if (role !== "admin") {
+          alert("RCA is only available in Admin mode.");
+          return;
+        }
+        const idx = elements[0].index;
+        const date = labels[idx];
+        loadRCA(date);
+      },
+      plugins: {
+        legend: { labels: { color: "#e5e7eb", font: { size: 11 } } }
+      },
+      scales: {
+        x: { ticks: { color: "#9ca3af", font:{size:10} }, grid: { color: "#1f2937" } },
+        y: { ticks: { color: "#9ca3af", font:{size:10} }, grid: { color: "#1f2937" } }
+      }
+    }
+  });
+}
+
+function drawUnitCost(data) {
+  const labels = data.map(d => d.date);
+  const series = data.map(d => d.unit_cost);
+
+  const ctx = document.getElementById("unitCostChart").getContext("2d");
+  if (unitCostChart) unitCostChart.destroy();
+
+  unitCostChart = new Chart(ctx, {
+    type: "line",
+    data: {
+      labels,
+      datasets: [{
+        label: "Unit Cost",
+        data: series,
+        borderColor: "#22c55e",
+        pointBackgroundColor: "#22c55e",
+        borderWidth: 2,
+        pointRadius: 3,
+        tension: 0
+      }]
+    },
+    options: {
+      animation: false,
+      plugins: { legend:{ labels:{ color:"#e5e7eb", font:{size:11} } } },
+      scales: {
+        x: { ticks:{ color:"#9ca3af", font:{size:10} }, grid:{ color:"#1f2937" } },
+        y: { ticks:{ color:"#9ca3af", font:{size:10} }, grid:{ color:"#1f2937" } }
+      }
+    }
+  });
+}
+
+async function loadRCA(date) {
+  try {
+    statusTxt.textContent = "Loading RCA…";
+    const res = await fetch(API + "/rca?date=" + encodeURIComponent(date));
+    const d = await res.json();
+    rcaBox.innerHTML = `
+      <p><strong>Date:</strong> ${d.date}</p>
+      <p><strong>Top Service:</strong> ${d.top_service?.name} (${d.top_service?.cost})</p>
+      <p><strong>Top Region:</strong> ${d.top_region?.name} (${d.top_region?.cost})</p>
+      <p><strong>Top Tag:</strong> ${d.top_tag?.name} (${d.top_tag?.cost})</p>
+      <p>${d.message || ""}</p>
+    `;
+    statusTxt.textContent = "Ready";
+  } catch (err) {
+    console.error(err);
+    alert("Failed to load RCA.");
+  }
+}
+
+function renderSummary(data) {
+  const pts = data.anomalies || [];
+  const totalDays = pts.length;
+  const anomalyDays = pts.filter(p => p.is_anomaly).length;
+  const high = pts.filter(p => p.severity === "HIGH").length;
+  const med = pts.filter(p => p.severity === "MEDIUM").length;
+  const low = pts.filter(p => p.severity === "LOW").length;
+
+  summaryBox.innerHTML = `
+    <p><strong>Total days:</strong> ${totalDays}</p>
+    <p><strong>Days with anomalies:</strong> ${anomalyDays}</p>
+    <p><strong>Severity breakdown:</strong> ${high} HIGH · ${med} MED · ${low} LOW</p>
+    <p><strong>Mean cost:</strong> ${data.mean_cost.toFixed(2)}</p>
+  `;
+}
+
+function renderBanner(data) {
+  const pts = data.anomalies || [];
+  const high = pts.filter(p => p.severity === "HIGH").length;
+  if (!pts.length) {
+    alertBox.style.display = "none";
+    return;
+  }
+  if (high > 0) {
+    alertBox.className = "critical";
+    alertBox.textContent = `🚨 ${high} high-severity anomalies detected — treat as potential cost leaks or security risks.`;
+  } else {
+    alertBox.className = "ok";
+    alertBox.textContent = "✅ No high-severity anomalies. Only low/medium spikes detected.";
+  }
+  alertBox.style.display = "block";
+}
+
+function downloadCSV() {
+  if (!lastDetection || !lastDetection.anomalies) {
+    alert("Run detection first, then you can download CSV.");
+    return;
+  }
+  const rows = [
+    ["date", "total_cost", "expected_cost", "unit_cost", "is_anomaly", "severity"]
+  ];
+  lastDetection.anomalies.forEach(a => {
+    rows.push([
+      a.date,
+      a.total_cost,
+      a.expected_cost,
+      a.unit_cost ?? "",
+      a.is_anomaly,
+      a.severity
+    ]);
+  });
+
+  const csv = rows.map(r => r.join(",")).join("\n");
+  const blob = new Blob([csv], { type: "text/csv" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "finops-anomalies.csv";
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+</script>
+
+</body>
+</html>
