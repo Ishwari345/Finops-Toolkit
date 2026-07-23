@@ -35,6 +35,45 @@ The project combines **Machine Learning**, **Cloud Cost Analytics**, and **FinOp
 - 🌐 REST API using FastAPI
 
 ---
+## 📷 Project Screenshots
+
+### Dashboard Overview
+
+Shows anomaly detection, expected vs actual cloud costs, and Root Cause Analysis (RCA).
+
+![Dashboard Overview](screenshots/dashboard-overview.png)
+
+---
+
+### Analytics Dashboard
+
+Displays unit cost trends and project summary statistics.
+
+![Analytics Dashboard](screenshots/analytics-dashboard.png)
+
+---
+
+### FastAPI REST API
+
+Swagger documentation for backend REST endpoints.
+
+![FastAPI Docs](screenshots/fastapi-docs.png)
+
+---
+
+### CSV Export
+
+Generated anomaly report exported as CSV.
+
+![CSV Export](screenshots/csv-export.png)
+
+---
+
+### Viewer Mode
+
+Dashboard displayed with Viewer role permissions.
+
+![Viewer Mode](screenshots/viewer-mode.png)
 
 ## 🏗 System Architecture
 
