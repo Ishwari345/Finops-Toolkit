@@ -16,6 +16,7 @@
     select { padding:5px 8px; border-radius:8px; background:#111827; color:#e5e7eb; border:1px solid #374151; }
     .btn { background:#22c55e; color:#022c22; padding:8px 14px; border-radius:999px; font-size:13px; border:none; cursor:pointer; font-weight:500; }
     .btn.secondary { background:#38bdf8; color:#0f172a; }
+    .btn.upload { background:#a78bfa; color:#1e1b4b; }
     .btn:disabled { opacity:0.5; cursor:not-allowed; }
     .btn:hover:not(:disabled) { transform:scale(1.03); }
     #status { font-size:12px; color:#9ca3af; }
@@ -29,6 +30,7 @@
     #alert-banner.ok { background:#064e3b; border:1px solid #16a34a; color:#bbf7d0; }
     #rca-content p { margin:4px 0; font-size:13px; }
     hr { border:none; border-top:1px solid #1f2937; margin:10px 0; }
+    #upload-status { font-size:11px; color:#9ca3af; margin-left:4px; }
     @media (max-width:900px) { .grid { grid-template-columns:1fr; } }
   </style>
 </head>
@@ -57,6 +59,13 @@
     <button class="btn" id="runBtn">Run Detection</button>
     <button class="btn secondary" id="downloadBtn">Download CSV</button>
 
+    <div>
+      <label for="csvFileInput">Upload Your Own CSV</label><br/>
+      <input type="file" id="csvFileInput" accept=".csv" />
+    </div>
+    <button class="btn upload" id="uploadBtn">Analyze Uploaded CSV</button>
+    <span id="upload-status"></span>
+
     <div id="alert-banner"></div>
   </div>
 
@@ -73,23 +82,11 @@
     </div>
   </div>
 
-  <div class="grid" style="margin-top:16px;">
+  <div style="margin-top:16px;">
     <div class="card">
       <h2>💹 Unit Cost Trend</h2>
       <small>Cost per unit over time</small>
       <canvas id="unitCostChart"></canvas>
-    </div>
-
-    <div class="card">
-      <h2>📊 Summary & Project Info</h2>
-      <div id="summary-content"><p>Click “Run Detection” to see summary.</p></div>
-      <hr/>
-      <small>
-        <strong>Project:</strong> FinOps Toolkit for Intelligent Cloud Cost Anomaly Detection<br/>
-        <strong>Team:</strong> Ishwari Bagewadi,Hitha M,Faiza V K <br/>
-        <strong>Guide:</strong> Dr. Girish Kumar B C<br/>
-        <strong>College:</strong> RV Institute of Technology and Management
-      </small>
     </div>
   </div>
 </main>
@@ -108,19 +105,23 @@ const roleSelect = document.getElementById("role-select");
 const statusTxt = document.getElementById("status");
 const alertBox = document.getElementById("alert-banner");
 const rcaBox = document.getElementById("rca-content");
-const summaryBox = document.getElementById("summary-content");
 const runBtn = document.getElementById("runBtn");
 const downloadBtn = document.getElementById("downloadBtn");
+const csvFileInput = document.getElementById("csvFileInput");
+const uploadBtn = document.getElementById("uploadBtn");
+const uploadStatus = document.getElementById("upload-status");
 
 sens.oninput = () => { sensLabel.textContent = sens.value; };
 roleSelect.onchange = () => { role = roleSelect.value; applyRole(); };
 runBtn.onclick = () => runDetection();
 downloadBtn.onclick = () => downloadCSV();
+uploadBtn.onclick = () => uploadCSV();
 
 function applyRole() {
   const isViewer = role === "viewer";
   sens.disabled = isViewer;
   runBtn.disabled = isViewer;
+  uploadBtn.disabled = isViewer;
   statusTxt.textContent = isViewer ? "Viewer Mode (read-only)" : "Admin Mode";
 }
 
@@ -131,7 +132,6 @@ async function runDetection() {
     statusTxt.textContent = "Detecting…";
     alertBox.style.display = "none";
     rcaBox.innerHTML = "<p>Select anomaly for RCA.</p>";
-    summaryBox.innerHTML = "<p>Loading…</p>";
 
     const res = await fetch(API + "/detect-anomalies", {
       method: "POST",
@@ -148,7 +148,6 @@ async function runDetection() {
 
     drawCostChart(data);
     drawUnitCost(unitData);
-    renderSummary(data);
     renderBanner(data);
 
     statusTxt.textContent = "Ready";
@@ -156,6 +155,59 @@ async function runDetection() {
     console.error(err);
     alert("❌ API not running — start with:\nuvicorn ml_service:app --reload --port 8000");
     statusTxt.textContent = "Error";
+  }
+}
+
+async function uploadCSV() {
+  const file = csvFileInput.files[0];
+
+  if (!file) {
+    uploadStatus.textContent = "Please choose a CSV file first.";
+    return;
+  }
+  if (!file.name.toLowerCase().endsWith(".csv")) {
+    uploadStatus.textContent = "Only .csv files are supported.";
+    return;
+  }
+
+  const formData = new FormData();
+  formData.append("file", file);
+
+  try {
+    uploadBtn.disabled = true;
+    uploadStatus.textContent = "Analyzing uploaded file…";
+    statusTxt.textContent = "Analyzing uploaded CSV…";
+    alertBox.style.display = "none";
+    rcaBox.innerHTML = "<p>RCA is based on the default dataset only.</p>";
+
+    const url = API + "/upload-csv?sensitivity=" + parseFloat(sens.value);
+    const res = await fetch(url, {
+      method: "POST",
+      body: formData
+    });
+
+    if (!res.ok) {
+      const errBody = await res.json().catch(() => null);
+      const msg = errBody && errBody.detail ? errBody.detail : "Upload failed.";
+      throw new Error(msg);
+    }
+
+    const data = await res.json();
+    const detection = data.anomaly_detection;
+    lastDetection = detection;
+
+    drawCostChart(detection);
+    drawUnitCost(data.unit_cost_timeseries);
+    renderBanner(detection);
+
+    uploadStatus.textContent = `Analyzed "${data.filename}" (${data.rows_processed} rows).`;
+    statusTxt.textContent = "Ready";
+  } catch (err) {
+    console.error(err);
+    uploadStatus.textContent = "Error: " + err.message;
+    statusTxt.textContent = "Error";
+  } finally {
+    uploadBtn.disabled = (role === "viewer");
   }
 }
 
@@ -272,22 +324,6 @@ async function loadRCA(date) {
   }
 }
 
-function renderSummary(data) {
-  const pts = data.anomalies || [];
-  const totalDays = pts.length;
-  const anomalyDays = pts.filter(p => p.is_anomaly).length;
-  const high = pts.filter(p => p.severity === "HIGH").length;
-  const med = pts.filter(p => p.severity === "MEDIUM").length;
-  const low = pts.filter(p => p.severity === "LOW").length;
-
-  summaryBox.innerHTML = `
-    <p><strong>Total days:</strong> ${totalDays}</p>
-    <p><strong>Days with anomalies:</strong> ${anomalyDays}</p>
-    <p><strong>Severity breakdown:</strong> ${high} HIGH · ${med} MED · ${low} LOW</p>
-    <p><strong>Mean cost:</strong> ${data.mean_cost.toFixed(2)}</p>
-  `;
-}
-
 function renderBanner(data) {
   const pts = data.anomalies || [];
   const high = pts.filter(p => p.severity === "HIGH").length;
@@ -297,7 +333,7 @@ function renderBanner(data) {
   }
   if (high > 0) {
     alertBox.className = "critical";
-    alertBox.textContent = `🚨 ${high} high-severity anomalies detected — treat as potential cost leaks or security risks.`;
+    alertBox.textContent = `⚠️ ${high} high-severity anomalies detected — treat as potential cost leaks or security risks.`;
   } else {
     alertBox.className = "ok";
     alertBox.textContent = "✅ No high-severity anomalies. Only low/medium spikes detected.";
